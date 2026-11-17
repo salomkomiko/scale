@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scale Log</title>
+<style>
+/* Two-panel tool: daily weighing on the left, one-time scale setup on the right. */
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --fg: #1a1d24; --muted: #646b78;
+  --line: #dde1e7; --accent: #2457d6; --accent-fg: #ffffff; --good: #1f8a4c;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #12141a; --panel: #1b1e26; --fg: #e8eaef; --muted: #9aa1ae;
+    --line: #2c303a; --accent: #6d93ff; --accent-fg: #0d1020; --good: #4cc27f; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans);
+  padding: 24px max(16px, env(safe-area-inset-left, 0px)) 40px max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font-size: 20px; margin: 0 0 16px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; max-width: 1100px; }
+@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+.big { font-size: 52px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.1; }
+.big small { font-size: 22px; font-weight: 500; color: var(--muted); }
+.sub { color: var(--muted); font-variant-numeric: tabular-nums; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; width: 110px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#status { font-size: 13px; color: var(--muted); margin-top: 10px; }
+ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.list { display: flex; flex-direction: column; gap: 6px; }
+.cand, .dev { display: flex; justify-content: space-between; gap: 8px; text-align: left; width: 100%; }
+.cand b { font-variant-numeric: tabular-nums; }
+.cand span, .dev span { color: var(--muted); font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
+.cand.on { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good); }
+.log { font: 12px/1.6 var(--mono); max-height: 260px; overflow: auto; border-top: 1px solid var(--line); padding-top: 8px; }
+.log div { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log em { color: var(--muted); font-style: normal; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+td { padding: 6px 4px; border-top: 1px solid var(--line); }
+td:last-child { text-align: right; width: 1%; }
+canvas { width: 100%; height: 180px; display: block; margin-bottom: 8px; }
+.empty { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Scale Log</h1>
+<div class="grid">
+  <div class="col">
+    <section class="panel">
+      <h2>Now</h2>
+      <div class="big" id="weight">--<small> kg</small></div>
+      <div class="sub" id="derived">Finish setup, then step on the scale.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="save" disabled>Save reading</button>
+        <button id="reconnect">Reconnect scale</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>You</h2>
+      <div class="row">
+        <label>Height (cm)<input id="height" type="number" min="100" max="230"></label>
+        <label>Age<input id="age" type="number" min="10" max="100"></label>
+        <label>Sex<select id="sex"><option value="m">Male</option><option value="f">Female</option></select></label>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>History</h2>
+      <canvas id="chart" hidden></canvas>
+      <div id="history"></div>
+      <div class="row" style="margin-top:10px"><button id="export">Export CSV</button></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="panel">
+      <h2>Setup (one time)</h2>
+      <ol>
+        <li>Step on the scale to wake it.</li>
+        <li>Click <b>Connect</b> and pick the scale. If it won't connect, use <b>Listen to broadcasts</b>.</li>
+        <li>Enter your rough weight below, then click the reading that matches.</li>
+      </ol>
+      <div class="row">
+        <button class="primary" id="connect">Connect</button>
+        <button id="listen">Listen to broadcasts</button>
+      </div>
+      <div id="status"></div>
+      <div class="list" id="devices" style="margin-top:10px"></div>
+    </section>
+    <section class="panel">
+      <h2>Find the weight</h2>
+      <div class="row" style="margin-bottom:10px">
+        <label>Your rough weight (kg)<input id="target" type="number" step="0.1"></label>
+      </div>
+      <div class="list" id="cands"><div class="empty">Waiting for data from the scale.</div></div>
+    </section>
+    <section class="panel">
+      <h2>Raw packets</h2>
+      <div class="log" id="log"><div class="empty">Nothing yet.</div></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const db = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+// Common custom service UUIDs used by cheap BLE scales; Web Bluetooth only exposes services listed up front.
+const SERVICES = [0x181d, 0x181b, 0x180a, 0x180f, 0xffe0, 0xfff0, 0xffb0, 0xffa0, 0xffc0, 0xffd0,
+  0xffe5, 0xfee7, 0xfef5, 0x1910, 0xfa9b, 0x78b0, '6e400001-b5a3-f393-e0a9-e50e24dcca9e'];
+
+let packets = [];
+const lastBySource = {};
+let decoder = db.get('decoder', null);
+let entries = db.get('entries', []);
+let profile = db.get('profile', { height: 175, age: 30, sex: 'm' });
+let devices = new Map();
+let watchedId = db.get('watchedId', null);
+let currentKg = null;
+let pending = false;
+
+const hex = b => b.map(x => x.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+const bytesOf = dv => Array.from(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
+const short = u => { const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(u); return (m ? m[1] : u).toUpperCase(); };
+const label = d => `${d.source} @${d.offset} ${d.be ? 'BE' : 'LE'} ÷${d.div}`;
+const status = t => { $('#status').textContent = t; };
+
+function decode(d, p) {
+  if (!d || p.source !== d.source || d.offset + 1 >= p.bytes.length) return null;
+  const a = p.bytes[d.offset], b = p.bytes[d.offset + 1];
+  return (d.be ? (a << 8 | b) : (b << 8 | a)) / d.div;
+}
+
+function record(source, bytes) {
+  const key = bytes.join(',');
+  if (lastBySource[source] === key) return;
+  lastBySource[source] = key;
+  packets.unshift({ t: Date.now(), source, bytes });
+  if (packets.length > 300) packets.pop();
+  schedule();
+}
+
+function candidates() {
+  const target = parseFloat($('#target').value);
+  const out = new Map();
+  for (const p of packets.slice(0, 60)) {
+    for (let i = 0; i + 1 < p.bytes.length; i++) {
+      for (const be of [true, false]) {
+        for (const div of [10, 100]) {
+          const d = { source: p.source, offset: i, be, div };
+          const v = decode(d, p);
+          const ok = isFinite(target) ? Math.abs(v - target) <= 1.5 : v >= 20 && v <= 180;
+          if (ok && !out.has(label(d))) out.set(label(d), { d, v });
+        }
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; render(); }); } }
+
+function render() {
+  // live reading
+  currentKg = null;
+  if (decoder) for (const p of packets) { const v = decode(decoder, p); if (v != null) { currentKg = v; break; } }
+  const w = $('#weight'), der = $('#derived');
+  if (currentKg != null && currentKg > 5) {
+    w.innerHTML = `${currentKg.toFixed(2)}<small> kg</small>`;
+    const bmi = currentKg / Math.pow(profile.height / 100, 2);
+    const bf = 1.2 * bmi + 0.23 * profile.age - (profile.sex === 'm' ? 10.8 : 0) - 5.4;
+    der.textContent = `BMI ${bmi.toFixed(1)} · est. body fat ${bf.toFixed(0)}% (formula estimate)`;
+    $('#save').disabled = false;
+  } else {
+    w.innerHTML = `--<small> kg</small>`;
+    der.textContent = decoder ? 'Step on the scale.' : 'Finish setup, then step on the scale.';
+    $('#save').disabled = true;
+  }
+
+  // device list (scan mode)
+  const dl = $('#devices'); dl.innerHTML = '';
+  [...devices.values()].filter(d => Date.now() - d.seen < 15000).sort((a, b) => b.rssi - a.rssi).slice(0, 8).forEach(d => {
+    const btn = document.createElement('button');
+    btn.className = 'dev';
+    btn.innerHTML = `<b></b><span>${d.rssi} dBm${d.id === watchedId ? ' · watching' : ''}</span>`;
+    btn.querySelector('b').textContent = d.name;
+    btn.onclick = () => { watchedId = d.id; db.set('watchedId', watchedId); packets = []; for (const k in lastBySource) delete lastBySource[k]; schedule(); };
+    dl.appendChild(btn);
+  });
+
+  // candidates
+  const cl = $('#cands');
+  const cs = candidates();
+  cl.innerHTML = cs.length ? '' : `<div class="empty">${packets.length ? 'No match yet. Check your rough weight, or step off and on again.' : 'Waiting for data from the scale.'}</div>`;
+  cs.forEach(c => {
+    const btn = document.createElement('button');
+    const on = decoder && label(decoder) === label(c.d);
+    btn.className = 'cand' + (on ? ' on' : '');
+    btn.innerHTML = `<b>${c.v.toFixed(2)} kg${on ? ' ✓' : ''}</b><span>${label(c.d)}</span>`;
+    btn.onclick = () => { decoder = c.d; db.set('decoder', decoder); schedule(); };
+    cl.appendChild(btn);
+  });
+
+  // log
+  $('#log').innerHTML = packets.length ? packets.slice(0, 60).map(p =>
+    `<div><em>${new Date(p.t).toLocaleTimeString()} ${p.source}</em>\n${hex(p.bytes)}</div>`).join('') : '<div class="empty">Nothing yet.</div>';
+}
+
+function renderHistory() {
+  const h = $('#history');
+  if (!entries.length) { h.innerHTML = '<div class="empty">No saved readings yet.</div>'; $('#chart').hidden = true; return; }
+  h.innerHTML = '<table>' + entries.map((e, i) =>
+    `<tr><td>${new Date(e.t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</td><td>${e.kg.toFixed(2)} kg</td><td><button data-i="${i}" aria-label="Delete">×</button></td></tr>`).join('') + '</table>';
+  h.querySelectorAll('button').forEach(b => b.onclick = () => { entries.splice(+b.dataset.i, 1); db.set('entries', entries); renderHistory(); });
+  drawChart();
+}
+
+function drawChart() {
+  const c = $('#chart');
+  if (entries.length < 2) { c.hidden = true; return; }
+  c.hidden = false;
+  const cs = getComputedStyle(document.documentElement);
+  const dpr = devicePixelRatio || 1, W = c.clientWidth, H = 180;
+  c.width = W * dpr; c.height = H * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  const pts = [...entries].sort((a, b) => a.t - b.t);
+  const ys = pts.map(p => p.kg), lo = Math.min(...ys) - 0.5, hi = Math.max(...ys) + 0.5;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const L = 40, R = 10, T = 10, B = 20;
+  const x = t => L + (t - t0) / Math.max(1, t1 - t0) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  g.font = '11px ' + cs.getPropertyValue('--sans'); g.fillStyle = cs.getPropertyValue('--muted');
+  g.strokeStyle = cs.getPropertyValue('--line'); g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + (hi - lo) * i / 3, yy = y(v);
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(W - R, yy); g.stroke();
+    g.fillText(v.toFixed(1), 2, yy + 4);
+  }
+  g.strokeStyle = cs.getPropertyValue('--accent'); g.lineWidth = 2; g.beginPath();
+  pts.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.kg)) : g.moveTo(x(p.t), y(p.kg))); g.stroke();
+  g.fillStyle = cs.getPropertyValue('--accent');
+  pts.forEach(p => { g.beginPath(); g.arc(x(p.t), y(p.kg), 3, 0, 7); g.fill(); });
+}
+
+// ---- Bluetooth: connection mode ----
+async function connect() {
+  if (!navigator.bluetooth) return status('This browser has no Web Bluetooth. Open this file in Chrome or Edge.');
+  try {
+    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    status(`Connecting to ${dev.name || 'device'}…`);
+    dev.addEventListener('gattserverdisconnected', () => status('Scale disconnected. It sleeps after a while; step on it and click Reconnect.'));
+    const server = await dev.gatt.connect();
+    const services = await server.getPrimaryServices();
+    let n = 0;
+    for (const s of services) {
+      let chars = [];
+      try { chars = await s.getCharacteristics(); } catch {}
+      for (const c of chars) {
+        const src = 'gatt ' + short(c.uuid);
+        if (c.properties.notify || c.properties.indicate) {
+          try { c.addEventListener('characteristicvaluechanged', e => record(src, bytesOf(e.target.value))); await c.startNotifications(); n++; } catch {}
+        }
+        if (c.properties.read) { try { record(src, bytesOf(await c.readValue())); } catch {} }
+      }
+    }
+    db.set('mode', 'gatt');
+    status(n ? `Connected, listening on ${n} channel${n > 1 ? 's' : ''}. Step on the scale.` :
+      'Connected, but the scale exposes nothing readable. Try Listen to broadcasts instead.');
+  } catch (e) {
+    status(e.name === 'NotFoundError' ? 'No device picked.' : `Couldn't connect (${e.message}). This scale probably only broadcasts; try Listen to broadcasts.`);
+  }
+}
+
+// ---- Bluetooth: broadcast mode ----
+function handleAdv(e) {
+  if (e.manufacturerData) for (const [cid, dv] of e.manufacturerData) record('adv-mfr', [cid & 255, cid >> 8, ...bytesOf(dv)]);
+  if (e.serviceData) for (const [u, dv] of e.serviceData) record('adv-svc ' + short(u), bytesOf(dv));
+}
+
+async function listen() {
+  if (!navigator.bluetooth) return status('This browser has no Web Bluetooth. Open this file in Chrome or Edge.');
+  db.set('mode', 'adv');
+  if (navigator.bluetooth.requestLEScan) {
+    try {
+      await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true, keepRepeatedDevices: true });
+      navigator.bluetooth.addEventListener('advertisementreceived', e => {
+        devices.set(e.device.id, { id: e.device.id, name: e.device.name || e.name || 'Unnamed', rssi: e.rssi ?? -100, seen: Date.now() });
+        if (e.device.id === watchedId) handleAdv(e);
+        schedule();
+      });
+      return status('Scanning. Step on the scale, then click the strongest new device below.');
+    } catch (err) { /* fall through to per-device watching */ }
+  }
+  try {
+    let opts;
+    try { opts = { acceptAllDevices: true, optionalManufacturerData: Array.from({ length: 65536 }, (_, i) => i) }; }
+    catch { opts = { acceptAllDevices: true }; }
+    const dev = await navigator.bluetooth.requestDevice(opts);
+    if (!dev.watchAdvertisements) return status('Reading broadcasts needs one Chrome setting: open chrome://flags, turn on "Experimental Web Platform features", relaunch Chrome, and try again.');
+    dev.addEventListener('advertisementreceived', handleAdv);
+    await dev.watchAdvertisements();
+    status(`Listening to ${dev.name || 'the scale'}. Step on it.`);
+  } catch (e) {
+    status(e.name === 'NotFoundError' ? 'No device picked.' :
+      `Couldn't listen (${e.message}). Turn on "Experimental Web Platform features" in chrome://flags, relaunch Chrome, and try again.`);
+  }
+}
+
+// ---- UI wiring ----
+$('#connect').onclick = connect;
+$('#listen').onclick = listen;
+$('#reconnect').onclick = () => (db.get('mode', 'gatt') === 'adv' ? listen() : connect());
+$('#target').oninput = schedule;
+$('#save').onclick = () => {
+  if (currentKg == null) return;
+  entries.unshift({ t: Date.now(), kg: Math.round(currentKg * 100) / 100 });
+  db.set('entries', entries); renderHistory();
+  $('#save').textContent = 'Saved'; setTimeout(() => ($('#save').textContent = 'Save reading'), 1200);
+};
+$('#export').onclick = () => {
+  const csv = 'date,kg\n' + entries.map(e => `${new Date(e.t).toISOString()},${e.kg}`).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'weight.csv'; a.click();
+};
+for (const k of ['height', 'age', 'sex']) {
+  const el = $('#' + k); el.value = profile[k];
+  el.onchange = () => { profile[k] = k === 'sex' ? el.value : +el.value; db.set('profile', profile); schedule(); };
+}
+addEventListener('resize', drawChart);
+if (!navigator.bluetooth) status('This browser has no Web Bluetooth. Open this file in Chrome or Edge.');
+render(); renderHistory();
+</script>
+</body>
+</html>
