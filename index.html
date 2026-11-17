@@ -89,12 +89,13 @@ canvas { width: 100%; height: 180px; display: block; margin-bottom: 8px; }
       <h2>Setup (one time)</h2>
       <ol>
         <li>Step on the scale to wake it.</li>
-        <li>Click <b>Connect</b> and pick the scale. If it won't connect, use <b>Listen to broadcasts</b>.</li>
+        <li>While the scale's screen is still lit, click <b>Connect</b>. The list only shows devices that look like scales; pick the one that appeared when the scale woke up. If the list is empty, tick <b>Show all devices</b> and try again.</li>
         <li>Enter your rough weight below, then click the reading that matches.</li>
       </ol>
       <div class="row">
         <button class="primary" id="connect">Connect</button>
         <button id="listen">Listen to broadcasts</button>
+        <label style="flex-direction:row;align-items:center;gap:6px"><input id="showall" type="checkbox" style="width:auto">Show all devices</label>
       </div>
       <div id="status"></div>
       <div class="list" id="devices" style="margin-top:10px"></div>
@@ -124,6 +125,14 @@ const db = {
 const SERVICES = [0x181d, 0x181b, 0x180a, 0x180f, 0xffe0, 0xfff0, 0xffb0, 0xffa0, 0xffc0, 0xffd0,
   0xffe5, 0xfee7, 0xfef5, 0x1910, 0xfa9b, 0x78b0, '6e400001-b5a3-f393-e0a9-e50e24dcca9e'];
 
+// Names and services these generic bathroom scales usually advertise, so the picker hides headphones, TVs etc.
+const SCALE_FILTERS = [
+  ...['QN-', 'Chipsea', 'CS', 'SCALE', 'Scale', 'scale', 'BF', 'Body', 'Health', 'Electronic', 'MI SCALE', 'MIBFS',
+      'Yolanda', 'OKOK', 'iComon', 'Fitdays', 'ADV', 'AAA', 'SWAN', 'Lefu', 'LS', 'Smart', 'BM', 'FG', 'HM', 'MY']
+    .map(namePrefix => ({ namePrefix })),
+  { services: [0x181d] }, { services: [0x181b] }
+];
+let showAll = false;
 let packets = [];
 const lastBySource = {};
 let decoder = db.get('decoder', null);
@@ -261,7 +270,9 @@ function drawChart() {
 async function connect() {
   if (!navigator.bluetooth) return status('This browser has no Web Bluetooth. Open this file in Chrome or Edge.');
   try {
-    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    const dev = await navigator.bluetooth.requestDevice(showAll
+      ? { acceptAllDevices: true, optionalServices: SERVICES }
+      : { filters: SCALE_FILTERS, optionalServices: SERVICES });
     status(`Connecting to ${dev.name || 'device'}…`);
     dev.addEventListener('gattserverdisconnected', () => status('Scale disconnected. It sleeps after a while; step on it and click Reconnect.'));
     const server = await dev.gatt.connect();
@@ -323,6 +334,7 @@ async function listen() {
 
 // ---- UI wiring ----
 $('#connect').onclick = connect;
+$('#showall').onchange = e => { showAll = e.target.checked; };
 $('#listen').onclick = listen;
 $('#reconnect').onclick = () => (db.get('mode', 'gatt') === 'adv' ? listen() : connect());
 $('#target').oninput = schedule;
