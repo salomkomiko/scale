@@ -88,13 +88,13 @@ canvas { width: 100%; height: 180px; display: block; margin-bottom: 8px; }
     <section class="panel">
       <h2>Setup (one time)</h2>
       <ol>
-        <li>Step on the scale to wake it.</li>
-        <li>While the scale's screen is still lit, click <b>Connect</b>. The list only shows devices that look like scales; pick the one that appeared when the scale woke up. If the list is empty, tick <b>Show all devices</b> and try again.</li>
-        <li>Enter your rough weight below, then click the reading that matches.</li>
+        <li>Type your rough weight in <b>Your rough weight</b> below.</li>
+        <li>Click <b>Find my scale</b>, then step on the scale and stand still. It picks the right device by itself.</li>
+        <li>If it asks for a Chrome setting, do that once and try again.</li>
       </ol>
       <div class="row">
-        <button class="primary" id="connect">Connect</button>
-        <button id="listen">Listen to broadcasts</button>
+        <button class="primary" id="listen">Find my scale</button>
+        <button id="connect">Connect manually</button>
         <label style="flex-direction:row;align-items:center;gap:6px"><input id="showall" type="checkbox" style="width:auto">Show all devices</label>
       </div>
       <div id="status"></div>
@@ -303,20 +303,82 @@ function handleAdv(e) {
   if (e.serviceData) for (const [u, dv] of e.serviceData) record('adv-svc ' + short(u), bytesOf(dv));
 }
 
+// Auto-find: keep recent broadcasts from EVERY nearby device, then look for the one carrying your weight.
+const allAdv = new Map();   // deviceId -> { name, rssi, packets: [{source, bytes}] }
+let scanning = false;
+
+function advPackets(e) {
+  const out = [];
+  if (e.manufacturerData) for (const [cid, dv] of e.manufacturerData) out.push({ source: 'adv-mfr', bytes: [cid & 255, cid >> 8, ...bytesOf(dv)] });
+  if (e.serviceData) for (const [u, dv] of e.serviceData) out.push({ source: 'adv-svc ' + short(u), bytes: bytesOf(dv) });
+  return out;
+}
+
+function autoFind() {
+  const target = parseFloat($('#target').value);
+  if (!isFinite(target) || !scanning || (decoder && watchedId)) return;
+  let best = null;
+  for (const [id, d] of allAdv) {
+    // A real scale's value moves while you stand on it; constant bytes in other devices that happen to match are ignored.
+    for (const p of d.packets.slice(0, 40)) {
+      for (let i = 0; i + 1 < p.bytes.length; i++) for (const be of [true, false]) for (const div of [10, 100]) {
+        const dec = { source: p.source, offset: i, be, div };
+        const vals = d.packets.map(q => decode(dec, q)).filter(v => v != null);
+        const v = vals[0];
+        if (v == null || Math.abs(v - target) > 1.5) continue;
+        const moved = new Set(vals.map(x => x.toFixed(2))).size > 1;
+        const score = (moved ? 1000 : 0) + d.rssi - Math.abs(v - target) * 10;
+        if (!best || score > best.score) best = { id, d, dec, v, score, moved };
+      }
+    }
+  }
+  if (best && best.moved) {
+    watchedId = best.id; db.set('watchedId', watchedId);
+    decoder = best.dec; db.set('decoder', decoder);
+    packets = best.d.packets.map(p => ({ t: Date.now(), ...p }));
+    status(`Found your scale (${best.d.name}). Setup done: from now on just step on it.`);
+    schedule();
+  }
+}
+
 async function listen() {
-  if (!navigator.bluetooth) return status('This browser has no Web Bluetooth. Open this file in Chrome or Edge.');
+  if (!navigator.bluetooth) return status('This browser has no Web Bluetooth. Open this page in Chrome or Edge.');
+  if (!navigator.bluetooth.requestLEScan) {
+    return status('One-time Chrome setting needed: open chrome://flags, turn on "Experimental Web Platform features", click Relaunch, then come back and click Find my scale again.');
+  }
+  if (!isFinite(parseFloat($('#target').value))) {
+    $('#target').focus();
+    return status('First type your rough weight in the "Your rough weight" box, then click Find my scale.');
+  }
   db.set('mode', 'adv');
-  if (navigator.bluetooth.requestLEScan) {
-    try {
+  try {
+    if (!scanning) {
       await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true, keepRepeatedDevices: true });
+      scanning = true;
       navigator.bluetooth.addEventListener('advertisementreceived', e => {
-        devices.set(e.device.id, { id: e.device.id, name: e.device.name || e.name || 'Unnamed', rssi: e.rssi ?? -100, seen: Date.now() });
-        if (e.device.id === watchedId) handleAdv(e);
+        const id = e.device.id;
+        const name = e.device.name || e.name || 'Unnamed';
+        devices.set(id, { id, name, rssi: e.rssi ?? -100, seen: Date.now() });
+        const rec = allAdv.get(id) || { name, rssi: -100, packets: [] };
+        rec.rssi = e.rssi ?? rec.rssi; rec.name = name;
+        for (const p of advPackets(e)) {
+          if (!rec.packets.length || rec.packets[0].bytes.join() !== p.bytes.join()) rec.packets.unshift(p);
+        }
+        rec.packets.length = Math.min(rec.packets.length, 60);
+        allAdv.set(id, rec);
+        if (id === watchedId) handleAdv(e);
+        autoFind();
         schedule();
       });
-      return status('Scanning. Step on the scale, then click the strongest new device below.');
-    } catch (err) { /* fall through to per-device watching */ }
+    }
+    status(decoder && watchedId ? 'Listening. Step on the scale.' :
+      'Searching… Now step on the scale and stand still until the number locks. It will be picked automatically.');
+  } catch (e) {
+    status(`Couldn't start scanning (${e.message}). Make sure Bluetooth is on and you allowed the page to use it.`);
   }
+}
+
+async function oldListen() {
   try {
     let opts;
     try { opts = { acceptAllDevices: true, optionalManufacturerData: Array.from({ length: 65536 }, (_, i) => i) }; }
@@ -337,7 +399,8 @@ $('#connect').onclick = connect;
 $('#showall').onchange = e => { showAll = e.target.checked; };
 $('#listen').onclick = listen;
 $('#reconnect').onclick = () => (db.get('mode', 'gatt') === 'adv' ? listen() : connect());
-$('#target').oninput = schedule;
+$('#target').oninput = () => { try { localStorage.setItem('target', $('#target').value); } catch {} schedule(); };
+try { $('#target').value = localStorage.getItem('target') || ''; } catch {}
 $('#save').onclick = () => {
   if (currentKg == null) return;
   entries.unshift({ t: Date.now(), kg: Math.round(currentKg * 100) / 100 });
